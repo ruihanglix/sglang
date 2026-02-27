@@ -367,6 +367,24 @@ def get_model_info(
     # 1. Discover all available pipeline classes and cache them
     _discover_and_register_pipelines()
 
+    # 0. Check for non-diffusers models (e.g. HunyuanImage3 with config.json only)
+    from sglang.cli.utils import is_hunyuan_image3_model
+
+    if is_hunyuan_image3_model(model_path):
+        pipeline_cls = _PIPELINE_REGISTRY.get("HunyuanImage3Pipeline")
+        if pipeline_cls is None:
+            logger.error("HunyuanImage3Pipeline not found in registry")
+            return None
+        config_info = _get_config_info(model_path)
+        if config_info is None:
+            logger.error("Config info not found for HunyuanImage3")
+            return None
+        return ModelInfo(
+            pipeline_cls=pipeline_cls,
+            sampling_param_cls=config_info.sampling_param_cls,
+            pipeline_config_cls=config_info.pipeline_config_cls,
+        )
+
     # 2. Get pipeline class from model's model_index.json
     try:
         if os.path.exists(model_path):
@@ -657,6 +675,24 @@ def _register_configs():
         sampling_param_cls=GlmImageSamplingParams,
         pipeline_config_cls=GlmImagePipelineConfig,
         model_detectors=[lambda hf_id: "glm-image" in hf_id.lower()],
+    )
+
+    # HunyuanImage-3.0
+    from sglang.multimodal_gen.configs.pipeline_configs.hunyuan_image3 import (
+        HunyuanImage3PipelineConfig,
+    )
+    from sglang.multimodal_gen.configs.sample.hunyuan_image3 import (
+        HunyuanImage3SamplingParams,
+    )
+
+    register_configs(
+        sampling_param_cls=HunyuanImage3SamplingParams,
+        pipeline_config_cls=HunyuanImage3PipelineConfig,
+        model_detectors=[
+            lambda hf_id: "hunyuanimage-3" in hf_id.lower()
+            or "hunyuan-image-3" in hf_id.lower()
+            or "hunyuanimage3" in hf_id.lower(),
+        ],
     )
 
 

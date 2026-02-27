@@ -124,9 +124,24 @@ def is_diffusers_model_path(model_path: str) -> True:
     return True
 
 
+def is_hunyuan_image3_model(model_path: str) -> bool:
+    """Check if the model is HunyuanImage-3.0 by inspecting config.json architectures."""
+    config_path = os.path.join(model_path, "config.json")
+    if not os.path.exists(config_path):
+        return False
+    try:
+        with open(config_path) as f:
+            config = json.load(f)
+        return "HunyuanImage3ForCausalMM" in config.get("architectures", [])
+    except (json.JSONDecodeError, KeyError):
+        return False
+
+
 def get_is_diffusion_model(model_path: str):
     model_path = _maybe_download_model(model_path)
     is_diffusion_model = is_diffusers_model_path(model_path)
+    if not is_diffusion_model:
+        is_diffusion_model = is_hunyuan_image3_model(model_path)
     if is_diffusion_model:
         logger.info("Diffusion model detected")
     return is_diffusion_model
