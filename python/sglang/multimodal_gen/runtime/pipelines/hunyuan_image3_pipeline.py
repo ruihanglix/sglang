@@ -286,7 +286,9 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         return batch
 
     def _forward_image(self, batch: Req, server_args: ServerArgs) -> Req:
-        """Image generation forward."""
+        """Image generation / editing forward."""
+        from PIL import Image as PILImage
+
         prompt = batch.sampling_params.prompt
         image_size = getattr(batch.sampling_params, "size", "1024x1024")
 
@@ -294,30 +296,32 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             h, w = image_size.split("x")
             image_size = (int(h), int(w))
 
-        num_steps = getattr(
-            batch.sampling_params, "num_inference_steps",
-            getattr(server_args.pipeline_config, "diff_infer_steps", 8),
-        )
-        guidance_scale = getattr(
-            batch.sampling_params, "guidance_scale",
-            getattr(server_args.pipeline_config, "diff_guidance_scale", 2.5),
-        )
         seed = None
         if batch.seeds:
             seed = batch.seeds[0]
 
-        # Determine system prompt
+        # Load condition image for editing if provided
+        cond_image = None
+        image_path = getattr(batch.sampling_params, "image_path", None)
+        if image_path:
+            if isinstance(image_path, list):
+                image_path = image_path[0]
+            try:
+                cond_image = PILImage.open(image_path).convert("RGB")
+                logger.info("Loaded condition image: %s", image_path)
+            except Exception as e:
+                logger.warning("Failed to load condition image: %s", e)
+
         use_system_prompt = "en_unified"
         bot_task = "think_recaption"
 
         logger.info(
-            "Generating image: prompt=%s, size=%s, steps=%d",
+            "Generating image: prompt=%s, size=%s, edit=%s",
             prompt[:50] + "..." if len(prompt) > 50 else prompt,
             image_size,
-            num_steps,
+            cond_image is not None,
         )
 
-        # Set generation config
         gen_config = self.official_model.generation_config
         gen_config.flow_shift = getattr(
             server_args.pipeline_config, "flow_shift", 3.0
@@ -338,9 +342,9 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             torch.distributed.broadcast(sync_seed, src=0)
             torch.cuda.manual_seed(sync_seed.item())
 
-        # Generate image using official model
         cot_text, outputs = self.official_model.generate_image(
             prompt=prompt,
+            image=cond_image,
             image_size=image_size,
             seed=seed,
             use_system_prompt=use_system_prompt,
