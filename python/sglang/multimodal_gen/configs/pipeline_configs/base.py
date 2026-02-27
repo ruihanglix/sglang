@@ -158,6 +158,10 @@ class PipelineConfig:
     model_path: str = ""
     pipeline_config_path: str | None = None
 
+    # When True, allocate all GPUs to TP instead of SP by default.
+    # Autoregressive models (e.g. HunyuanImage-3.0) need TP, not SP.
+    prefer_tp: bool = False
+
     # precision and autocast
     enable_autocast: bool = True
 

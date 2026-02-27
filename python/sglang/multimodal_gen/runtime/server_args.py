@@ -458,7 +458,13 @@ class ServerArgs:
 
     def _adjust_parallelism(self):
         if self.tp_size is None:
-            self.tp_size = 1
+            if getattr(self.pipeline_config, "prefer_tp", False):
+                self.tp_size = self.num_gpus
+                logger.info(
+                    f"Pipeline prefers TP over SP, setting tp_size={self.tp_size}"
+                )
+            else:
+                self.tp_size = 1
 
         if self.hsdp_shard_dim is None:
             self.hsdp_shard_dim = self.num_gpus
