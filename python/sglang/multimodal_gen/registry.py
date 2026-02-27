@@ -264,23 +264,42 @@ def _get_config_info(model_path: str) -> Optional[ConfigInfo]:
             model_id = _MODEL_HF_PATH_TO_NAME[registered_model_hf_id]
             return _CONFIG_REGISTRY.get(model_id)
 
-    # 3. Use detectors
-    if os.path.exists(model_path):
-        config = verify_model_config_and_directory(model_path)
-    else:
-        config = maybe_download_model_index(model_path)
+    # 3. Use detectors - try with model path first (for models without model_index.json)
+    matched_model_names = []
+    for model_id, detector in _MODEL_NAME_DETECTORS:
+        if detector(model_path.lower()):
+            logger.debug(
+                f"Matched model name '{model_id}' using a registered detector on path."
+            )
+            matched_model_names.append(model_id)
+
+    if matched_model_names:
+        if len(matched_model_names) > 1:
+            logger.warning(
+                f"More than one model name is matched, using the first matched"
+            )
+        model_id = matched_model_names[0]
+        return _CONFIG_REGISTRY.get(model_id)
+
+    # 4. Try loading model_index.json and matching pipeline class name
+    try:
+        if os.path.exists(model_path):
+            config = verify_model_config_and_directory(model_path)
+        else:
+            config = maybe_download_model_index(model_path)
+    except (ValueError, Exception) as e:
+        raise RuntimeError(f"No model info found for model path: {model_path}") from e
 
     pipeline_name = config.get("_class_name", "").lower()
 
-    matched_model_names = []
     for model_id, detector in _MODEL_NAME_DETECTORS:
-        if detector(model_path.lower()) or detector(pipeline_name):
+        if detector(pipeline_name):
             logger.debug(
-                f"Matched model name '{model_id}' using a registered detector."
+                f"Matched model name '{model_id}' using a registered detector on pipeline name."
             )
-            matched_model_names += [model_id]
+            matched_model_names.append(model_id)
 
-    if len(matched_model_names) >= 1:
+    if matched_model_names:
         if len(matched_model_names) > 1:
             logger.warning(
                 f"More than one model name is matched, using the first matched"
