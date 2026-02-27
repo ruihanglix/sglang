@@ -413,7 +413,7 @@ class TPHunyuanImage3Model(nn.Module):
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else False
         output_hidden_states = output_hidden_states if output_hidden_states is not None else False
-        use_cache = use_cache if use_cache is not None else False
+        use_cache = use_cache if use_cache is not None else getattr(self.config, "use_cache", True)
         return_dict = return_dict if return_dict is not None else True
 
         if inputs_embeds is None:
