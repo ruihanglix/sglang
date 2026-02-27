@@ -822,6 +822,14 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
                                 high_freqs_order=self.model.taylor_cache_high_freqs_order)
         print(f"***use_taylor_cache: {self.model.use_taylor_cache}, cache_dic: {cache_dic}")
 
+        def _diag(tag, tensor):
+            if tensor is None:
+                return f"{tag}: None"
+            t = tensor.float()
+            return (f"{tag}: shape={list(tensor.shape)} dtype={tensor.dtype} "
+                    f"mean={t.mean().item():.6f} std={t.std().item():.6f} "
+                    f"min={t.min().item():.6f} max={t.max().item():.6f}")
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
@@ -850,22 +858,53 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
                     timesteps=t_expand,
                     **model_kwargs,
                 )
+                if i == 0:
+                    print(f"[DIAG] step={i} t={t.item():.4f}", flush=True)
+                    print(f"[DIAG]   {_diag('latent_model_input', latent_model_input)}", flush=True)
+                    cvi = model_inputs.get("cond_vae_images")
+                    if cvi is not None:
+                        if isinstance(cvi, torch.Tensor):
+                            print(f"[DIAG]   {_diag('cond_vae_images', cvi)}", flush=True)
+                        else:
+                            print(f"[DIAG]   cond_vae_images is list, len={len(cvi)}", flush=True)
+                    cviti = model_inputs.get("cond_vit_images")
+                    if cviti is not None:
+                        if isinstance(cviti, list):
+                            for ci, cv in enumerate(cviti):
+                                print(f"[DIAG]   {_diag(f'cond_vit_images[{ci}]', cv)}", flush=True)
+                        else:
+                            print(f"[DIAG]   {_diag('cond_vit_images', cviti)}", flush=True)
+
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     model_output = self.model(**model_inputs, first_step=(i == 0))
                     pred = model_output["diffusion_prediction"]
                 pred = pred.to(dtype=torch.float32)
+
+                if i == 0 or i == num_inference_steps - 1 or i == num_inference_steps // 2:
+                    print(f"[DIAG] step={i} t={t.item():.4f}", flush=True)
+                    print(f"[DIAG]   {_diag('pred (raw)', pred)}", flush=True)
+
                 # perform guidance
                 if self.do_classifier_free_guidance:
                     if not kwargs.get('cfg_distilled', False):
                         pred_cond, pred_uncond = pred.chunk(2)
+                        if i == 0 or i == num_inference_steps - 1:
+                            print(f"[DIAG]   {_diag('pred_cond', pred_cond)}", flush=True)
+                            print(f"[DIAG]   {_diag('pred_uncond', pred_uncond)}", flush=True)
                         pred = self.cfg_operator(pred_cond, pred_uncond, self.guidance_scale, step=i)
 
                 if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
                     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
                     pred = rescale_noise_cfg(pred, pred_cond, guidance_rescale=self.guidance_rescale)
 
+                if i == 0 or i == num_inference_steps - 1:
+                    print(f"[DIAG]   {_diag('pred (after cfg)', pred)}", flush=True)
+
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(pred, t, latents, **_scheduler_step_extra_kwargs, return_dict=False)[0]
+
+                if i == 0 or i == num_inference_steps - 1:
+                    print(f"[DIAG]   {_diag('latents (after step)', latents)}", flush=True)
 
                 if i != len(timesteps) - 1:
                     model_kwargs = self.model._update_model_kwargs_for_generation(  # noqa
