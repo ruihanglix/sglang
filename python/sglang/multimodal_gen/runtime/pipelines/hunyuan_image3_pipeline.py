@@ -160,10 +160,24 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
 
         multimodal_gen uses its own distributed setup (SP-based), so we can't
         call srt.initialize_model_parallel() directly. Instead, we create
-        minimal process groups that FusedMoE needs (_MOE_EP, _MOE_TP, _TP).
+        minimal process groups that FusedMoE needs (_MOE_EP, _MOE_TP, _TP),
+        and set a minimal SRT global server_args so FusedMoE.__init__ works.
         """
         import sglang.srt.distributed.parallel_state as srt_ps
         from sglang.srt.distributed.parallel_state import init_model_parallel_group
+        from sglang.srt.server_args import (
+            ServerArgs as SRTServerArgs,
+            get_global_server_args,
+            set_global_server_args_for_scheduler,
+        )
+
+        # FusedMoE calls get_global_server_args() in __init__, so set a minimal one
+        try:
+            get_global_server_args()
+        except ValueError:
+            minimal_srt_args = SRTServerArgs(model_path=self.model_path)
+            set_global_server_args_for_scheduler(minimal_srt_args)
+            logger.info("Set minimal SRT global server_args for FusedMoE")
 
         if not torch.distributed.is_initialized():
             logger.info("torch.distributed not initialized, initializing for single process")
