@@ -201,7 +201,7 @@ async def edits(
         )
 
     # Save all input images; additional images beyond the first are saved for potential future use
-    uploads_dir = os.path.join("inputs", "uploads")
+    uploads_dir = os.path.abspath(os.path.join("inputs", "uploads"))
     os.makedirs(uploads_dir, exist_ok=True)
 
     image_list = merge_image_input_list(images, urls)
@@ -213,7 +213,7 @@ async def edits(
             input_path = await save_image_to_path(
                 img, os.path.join(uploads_dir, f"{request_id}_{idx}_{filename}")
             )
-            input_paths.append(input_path)
+            input_paths.append(os.path.abspath(input_path))
     except Exception as e:
         raise HTTPException(
             status_code=400, detail=f"Failed to process image source: {str(e)}"

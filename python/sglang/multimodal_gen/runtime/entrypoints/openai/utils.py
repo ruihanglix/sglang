@@ -125,9 +125,45 @@ async def save_image_to_path(image: Union[UploadFile, str], target_path: str) ->
 async def _save_upload_to_path(upload: UploadFile, target_path: str) -> str:
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     content = await upload.read()
+    content = _decode_if_base64(content)
     with open(target_path, "wb") as f:
         f.write(content)
     return target_path
+
+
+_IMAGE_MAGIC = {
+    b"\x89PNG": "png",
+    b"\xff\xd8\xff": "jpeg",
+    b"RIFF": "webp",
+    b"GIF8": "gif",
+    b"BM": "bmp",
+}
+
+
+def _decode_if_base64(data: bytes) -> bytes:
+    """Return raw image bytes, decoding base64 if necessary.
+
+    Handles both raw base64 and data-URI prefixed content
+    (e.g. ``data:image/png;base64,iVBOR...``).
+    """
+    for magic in _IMAGE_MAGIC:
+        if data[:len(magic)] == magic:
+            return data
+
+    text = data.decode("ascii", errors="ignore").strip()
+    if text.startswith("data:"):
+        _, _, after = text.partition(",")
+        text = after
+
+    try:
+        decoded = base64.b64decode(text, validate=True)
+        for magic in _IMAGE_MAGIC:
+            if decoded[:len(magic)] == magic:
+                return decoded
+    except Exception:
+        pass
+
+    return data
 
 
 async def _maybe_url_image(img_url: str, target_path: str) -> str | None:

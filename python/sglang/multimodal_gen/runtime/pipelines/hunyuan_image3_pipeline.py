@@ -135,6 +135,12 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
                 logger.warning("Missing auxiliary weights: %s", real_missing[:10])
 
         official_model = official_model.to(device=device, dtype=torch.bfloat16)
+        # Restore VAE to float32: the official pipeline uses float32 VAE
+        # weights with float16 autocast for decoding. Keeping VAE in bf16
+        # degrades image reconstruction quality.
+        if hasattr(official_model, "vae") and official_model.vae is not None:
+            official_model.vae = official_model.vae.to(dtype=torch.float32)
+            logger.info("VAE restored to float32 for precision")
         official_model.eval()
 
         # Load generation config with model-specific fields
@@ -329,9 +335,11 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         gen_config = self.official_model.generation_config
         gen_config.use_system_prompt = use_system_prompt
         gen_config.bot_task = bot_task
-        # Force greedy decoding for TP: different ranks have different CUDA
-        # random states, so sampling produces different tokens → desync → hang.
-        gen_config.do_sample = False
+        # Synchronize CUDA random state across all TP ranks so that
+        # do_sample=True produces the same token on every rank, avoiding
+        # NCCL deadlocks while preserving the sampling-based prompt
+        # enhancement that the official model relies on.
+        self._sync_cuda_rng(seed)
 
         cot_text, outputs = self.official_model.generate_image(
             prompt=prompt,
@@ -392,6 +400,17 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
 
         return images if images else None
 
+    def _sync_cuda_rng(self, seed: Optional[int] = None):
+        """Synchronize CUDA random state across all TP ranks.
+
+        Ensures do_sample=True produces identical tokens on every rank,
+        preventing NCCL deadlocks from divergent autoregressive paths.
+        """
+        if seed is None:
+            seed = 42
+        torch.cuda.manual_seed(seed)
+        torch.manual_seed(seed)
+
     @torch.no_grad()
     def generate_text(
         self,
@@ -418,8 +437,7 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             **kwargs,
         )
 
-        # Force greedy decoding for TP compatibility (see _forward_image)
-        self.official_model.generation_config.do_sample = False
+        self._sync_cuda_rng()
 
         input_length = model_inputs["input_ids"].shape[1]
         outputs = self.official_model.generate(
