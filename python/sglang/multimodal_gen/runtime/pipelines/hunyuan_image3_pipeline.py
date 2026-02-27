@@ -145,9 +145,14 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         except Exception as e:
             logger.warning("Failed to load generation_config: %s", e)
 
-        # Load tokenizer
+        # Load tokenizer directly (config may lack model_version field)
         logger.info("Loading tokenizer...")
-        official_model.load_tokenizer(self.model_path)
+        from sglang.multimodal_gen.runtime.models.hunyuan_image3.tokenization_hunyuan_image_3 import (
+            HunyuanImage3TokenizerFast,
+        )
+        official_model._tokenizer = HunyuanImage3TokenizerFast.from_pretrained(
+            self.model_path
+        )
 
         self.official_model = official_model
         self.config = config
