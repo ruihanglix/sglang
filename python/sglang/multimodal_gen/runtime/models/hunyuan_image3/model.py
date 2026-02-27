@@ -282,13 +282,12 @@ class TPHunyuanMoE(nn.Module):
         if self.shared_mlp is not None:
             shared_output = self.shared_mlp(hidden_states)
 
-        # Match official HunyuanMoE: disable autocast and compute gate in
-        # float32 for precise expert routing (official weights are float32;
-        # ours are bfloat16 after .to(), so we cast both input and weight).
-        with torch.autocast("cuda", enabled=False):
-            gate_input = hidden_states.float()
-            gate_weight = self.gate.weight.float()
-            router_logits = torch.nn.functional.linear(gate_input, gate_weight)
+        # The official flashinfer path computes the gate under the ambient
+        # autocast (bfloat16 during diffusion, matching HunyuanTopKGate).
+        # We intentionally do NOT disable autocast here so that the gate
+        # precision matches the official model during both diffusion and
+        # text generation phases.
+        router_logits, _ = self.gate(hidden_states)
         topk_output = self.topk(hidden_states, router_logits)
         final_hidden_states = self.experts(hidden_states, topk_output)
 
