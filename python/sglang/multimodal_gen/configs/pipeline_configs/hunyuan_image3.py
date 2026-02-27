@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 
-from sglang.multimodal_gen.configs.models.model_task_type import ModelTaskType
-from sglang.multimodal_gen.configs.pipeline_configs.base import ImagePipelineConfig
+from sglang.multimodal_gen.configs.pipeline_configs.base import (
+    ImagePipelineConfig,
+    ModelTaskType,
+)
 
 
 @dataclass
