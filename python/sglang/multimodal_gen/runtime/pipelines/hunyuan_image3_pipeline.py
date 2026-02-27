@@ -168,18 +168,23 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         minimal process groups that FusedMoE needs (_MOE_EP, _MOE_TP, _TP),
         and set a minimal SRT global server_args so FusedMoE.__init__ works.
         """
-        import types
-
         import sglang.srt.distributed.parallel_state as srt_ps
         import sglang.srt.server_args as srt_sa
         from sglang.srt.distributed.parallel_state import init_model_parallel_group
 
-        # FusedMoE.__init__ calls get_global_server_args() for kt_weight_path.
-        # SRT's real ServerArgs.__post_init__ is too heavy (loads model config),
-        # so we set a lightweight stub that satisfies the FusedMoE check.
+        # FusedMoE and srt distributed code access various global server_args
+        # fields. SRT's real ServerArgs.__post_init__ is too heavy, so we set
+        # a stub that returns False/None for any missing attribute.
         if srt_sa._global_server_args is None:
-            stub = types.SimpleNamespace(kt_weight_path=None)
-            srt_sa._global_server_args = stub
+
+            class _SRTArgsStub:
+                kt_weight_path = None
+                enable_symm_mem = False
+
+                def __getattr__(self, name):
+                    return None
+
+            srt_sa._global_server_args = _SRTArgsStub()
             logger.info("Set stub SRT global server_args for FusedMoE")
 
         if not torch.distributed.is_initialized():
