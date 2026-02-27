@@ -286,64 +286,65 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         return batch
 
     def _forward_image(self, batch: Req, server_args: ServerArgs) -> Req:
-        """Image generation forward."""
+        """Image generation / editing forward.
+
+        Follows the official HunyuanImage-3.0-Instruct generate_image() flow:
+        1. think_recaption: CoT reasoning → prompt rewriting → auto ratio
+        2. Image diffusion with the rewritten prompt
+        """
+        import numpy as np
+        from PIL import Image
+
         prompt = batch.sampling_params.prompt
-        image_size = getattr(batch.sampling_params, "size", "1024x1024")
+        seed = batch.seeds[0] if batch.seeds else None
 
-        if isinstance(image_size, str) and "x" in image_size:
-            h, w = image_size.split("x")
+        # Load input images for editing (from /v1/images/edits)
+        input_images = self._load_input_images(batch)
+
+        # Use "auto" for image_size to enable automatic aspect ratio detection
+        # via the think_recaption text generation stage. Only fall back to an
+        # explicit size when the user requests a specific non-auto size AND
+        # there are no input images (pure t2i with forced size).
+        user_size = getattr(batch.sampling_params, "size", None)
+        if input_images is not None:
+            image_size = "auto"
+        elif user_size and isinstance(user_size, str) and "x" in user_size:
+            h, w = user_size.split("x")
             image_size = (int(h), int(w))
+        else:
+            image_size = "auto"
 
-        num_steps = getattr(
-            batch.sampling_params, "num_inference_steps",
-            getattr(server_args.pipeline_config, "diff_infer_steps", 8),
-        )
-        guidance_scale = getattr(
-            batch.sampling_params, "guidance_scale",
-            getattr(server_args.pipeline_config, "diff_guidance_scale", 2.5),
-        )
-        seed = None
-        if batch.seeds:
-            seed = batch.seeds[0]
-
-        # Determine system prompt
         use_system_prompt = "en_unified"
         bot_task = "think_recaption"
 
         logger.info(
-            "Generating image: prompt=%s, size=%s, steps=%d",
+            "Generating image: prompt=%s, size=%s, has_input_image=%s",
             prompt[:50] + "..." if len(prompt) > 50 else prompt,
             image_size,
-            num_steps,
+            input_images is not None,
         )
 
-        # Set generation config
+        # Configure generation parameters from the model's own generation_config
+        # (loaded from generation_config.json: diff_infer_steps=50, etc.)
         gen_config = self.official_model.generation_config
-        gen_config.flow_shift = getattr(
-            server_args.pipeline_config, "flow_shift", 3.0
-        )
         gen_config.use_system_prompt = use_system_prompt
         gen_config.bot_task = bot_task
-
-        # Force greedy decoding for text generation phases (CoT, recaption).
-        # With TP, different ranks have different CUDA random states, so
-        # sampling can produce different tokens on different ranks, causing
-        # the text generation to end at different steps and deadlocking the
-        # subsequent collective operations.
+        # Force greedy decoding for TP: different ranks have different CUDA
+        # random states, so sampling produces different tokens → desync → hang.
         gen_config.do_sample = False
 
-        # Generate image using official model
         cot_text, outputs = self.official_model.generate_image(
             prompt=prompt,
-            image_size=image_size,
+            image=input_images,
             seed=seed,
+            image_size=image_size,
             use_system_prompt=use_system_prompt,
             bot_task=bot_task,
+            infer_align_image_size=(input_images is not None),
         )
 
-        # Convert PIL images to numpy arrays for post_process_sample
-        import numpy as np
-        from PIL import Image
+        if cot_text:
+            logger.info("CoT/recaption: %s", str(cot_text)[:200])
 
         raw_images = []
         if hasattr(outputs, "images"):
@@ -366,6 +367,30 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
 
         batch.output = np_images
         return batch
+
+    def _load_input_images(self, batch: Req):
+        """Load input image(s) from batch for image editing.
+
+        Returns a list of PIL Images or None for text-to-image.
+        """
+        from PIL import Image
+
+        image_path = getattr(batch, "image_path", None)
+        if image_path is None:
+            return None
+
+        if isinstance(image_path, str):
+            image_path = [image_path]
+
+        images = []
+        for p in image_path:
+            try:
+                img = Image.open(p).convert("RGB")
+                images.append(img)
+            except Exception as e:
+                logger.warning("Failed to load image %s: %s", p, e)
+
+        return images if images else None
 
     @torch.no_grad()
     def generate_text(
