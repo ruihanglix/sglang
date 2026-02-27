@@ -41,6 +41,10 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 def _apply_rotary_pos_emb(q, k, cos, sin):
+    # cos/sin are [batch, seq_len, head_dim]; unsqueeze at dim=1 for head broadcast
+    if cos.dim() == 3:
+        cos = cos.unsqueeze(1)
+        sin = sin.unsqueeze(1)
     q_embed = (q * cos) + (_rotate_half(q) * sin)
     k_embed = (k * cos) + (_rotate_half(k) * sin)
     return q_embed, k_embed
