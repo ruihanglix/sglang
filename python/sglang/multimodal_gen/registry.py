@@ -483,14 +483,17 @@ def _register_configs():
         ],
     )
 
-    # Hunyuan
+    # Hunyuan Video (exclude HunyuanImage-3 which is registered separately)
     register_configs(
         sampling_param_cls=HunyuanSamplingParams,
         pipeline_config_cls=HunyuanConfig,
         hf_model_paths=[
             "hunyuanvideo-community/HunyuanVideo",
         ],
-        model_detectors=[lambda hf_id: "hunyuan" in hf_id.lower()],
+        model_detectors=[
+            lambda hf_id: "hunyuan" in hf_id.lower()
+            and "hunyuanimage" not in hf_id.lower()
+        ],
     )
     register_configs(
         sampling_param_cls=FastHunyuanSamplingParam,
@@ -696,7 +699,7 @@ def _register_configs():
         model_detectors=[lambda hf_id: "glm-image" in hf_id.lower()],
     )
 
-    # HunyuanImage-3.0
+    # HunyuanImage-3.0 (must be registered before generic Hunyuan to avoid false matches)
     from sglang.multimodal_gen.configs.pipeline_configs.hunyuan_image3 import (
         HunyuanImage3PipelineConfig,
     )
@@ -708,9 +711,9 @@ def _register_configs():
         sampling_param_cls=HunyuanImage3SamplingParams,
         pipeline_config_cls=HunyuanImage3PipelineConfig,
         model_detectors=[
-            lambda hf_id: "hunyuanimage-3" in hf_id.lower()
-            or "hunyuan-image-3" in hf_id.lower()
-            or "hunyuanimage3" in hf_id.lower(),
+            lambda hf_id: "hunyuanimage-3" in hf_id
+            or "hunyuan-image-3" in hf_id
+            or "hunyuanimage3" in hf_id,
         ],
     )
 
