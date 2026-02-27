@@ -899,6 +899,11 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
             image = self.vae.decode(latents, return_dict=False, generator=generator)[0]
 
+        if image.numel() == 0:
+            if not return_dict:
+                return ([],)
+            return HunyuanImage3Text2ImagePipelineOutput(samples=[])
+
         # b c t h w
         if hasattr(self.vae, "ffactor_temporal"):
             assert image.shape[2] == 1, "image should have shape [B, C, T, H, W] and T should be 1"

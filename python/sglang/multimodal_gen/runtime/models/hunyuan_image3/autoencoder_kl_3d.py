@@ -815,7 +815,9 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
             decoded = _decode(z)
         if torch.distributed.is_initialized():
             if torch.distributed.get_rank() != 0:
-                return self.empty_cache
+                if not return_dict:
+                    return (self.empty_cache,)
+                return DecoderOutput(sample=self.empty_cache)
 
         if z.shape[-3] == 1:
             decoded = decoded[:, :, -1:]
