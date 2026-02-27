@@ -334,14 +334,30 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             bot_task=bot_task,
         )
 
-        # outputs contains PIL images
-        if hasattr(outputs, "images"):
-            batch.output = outputs.images
-        elif isinstance(outputs, list):
-            batch.output = outputs
-        else:
-            batch.output = [outputs]
+        # Convert PIL images to numpy arrays for post_process_sample
+        import numpy as np
+        from PIL import Image
 
+        raw_images = []
+        if hasattr(outputs, "images"):
+            raw_images = outputs.images
+        elif isinstance(outputs, list):
+            raw_images = outputs
+        else:
+            raw_images = [outputs]
+
+        np_images = []
+        for img in raw_images:
+            if isinstance(img, Image.Image):
+                np_images.append(np.array(img))
+            elif isinstance(img, np.ndarray):
+                np_images.append(img)
+            elif isinstance(img, torch.Tensor):
+                np_images.append(img.cpu().numpy())
+            else:
+                np_images.append(img)
+
+        batch.output = np_images
         return batch
 
     @torch.no_grad()
