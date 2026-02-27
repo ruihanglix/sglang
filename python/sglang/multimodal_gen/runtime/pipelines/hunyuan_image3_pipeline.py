@@ -158,32 +158,62 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
     def _init_srt_distributed(self, tp_size: int, ep_size: int):
         """Initialize srt distributed state for FusedMoE.
 
-        This is called after multimodal_gen has already initialized
-        torch.distributed. We create srt's process groups on top of it.
+        multimodal_gen uses its own distributed setup (SP-based), so we can't
+        call srt.initialize_model_parallel() directly. Instead, we create
+        minimal process groups that FusedMoE needs (_MOE_EP, _MOE_TP, _TP).
         """
-        try:
-            from sglang.srt.distributed import (
-                initialize_model_parallel as srt_init_mp,
+        import sglang.srt.distributed.parallel_state as srt_ps
+        from sglang.srt.distributed.parallel_state import init_model_parallel_group
+
+        if not torch.distributed.is_initialized():
+            logger.info("torch.distributed not initialized, initializing for single process")
+            torch.distributed.init_process_group(
+                backend="nccl",
+                init_method="tcp://127.0.0.1:29599",
+                world_size=1,
+                rank=0,
             )
 
-            if not torch.distributed.is_initialized():
-                logger.info("torch.distributed not initialized, initializing for single process")
-                torch.distributed.init_process_group(
-                    backend="nccl",
-                    init_method="tcp://127.0.0.1:29599",
-                    world_size=1,
-                    rank=0,
+        world_size = torch.distributed.get_world_size()
+        rank = torch.distributed.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK", rank))
+        backend = "nccl"
+
+        try:
+            # TP group: all ranks in one group (for TP weight sharding)
+            tp_ranks = [list(range(world_size))]
+            if srt_ps._TP is None:
+                srt_ps._TP = init_model_parallel_group(
+                    tp_ranks, local_rank, backend,
+                    use_pynccl=False, use_custom_allreduce=False,
+                    use_message_queue_broadcaster=False,
+                    group_name="srt_tp_for_moe",
                 )
 
-            srt_init_mp(
-                tensor_model_parallel_size=tp_size,
-                expert_model_parallel_size=ep_size,
-            )
+            # MoE EP: each rank is its own group (no expert parallelism)
+            ep_ranks = [[r] for r in range(world_size)]
+            if srt_ps._MOE_EP is None:
+                srt_ps._MOE_EP = init_model_parallel_group(
+                    ep_ranks, local_rank, backend,
+                    use_pynccl=False, use_custom_allreduce=False,
+                    group_name="srt_moe_ep",
+                )
+
+            # MoE TP: same as TP (shard expert intermediate dims across GPUs)
+            if srt_ps._MOE_TP is None:
+                srt_ps._MOE_TP = init_model_parallel_group(
+                    tp_ranks, local_rank, backend,
+                    use_pynccl=False, use_custom_allreduce=False,
+                    group_name="srt_moe_tp",
+                )
+
             logger.info(
-                "Initialized srt distributed: TP=%d, EP=%d", tp_size, ep_size
+                "Initialized srt distributed for FusedMoE: world_size=%d, rank=%d",
+                world_size,
+                rank,
             )
         except Exception as e:
-            logger.warning("Failed to initialize srt distributed: %s", e)
+            logger.error("Failed to initialize srt distributed: %s", e, exc_info=True)
 
     def create_pipeline_stages(self, server_args: ServerArgs):
         """No stages - we handle everything in forward()."""
