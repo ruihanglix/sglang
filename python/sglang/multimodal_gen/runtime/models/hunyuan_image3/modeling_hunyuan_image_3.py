@@ -2453,6 +2453,12 @@ class HunyuanImage3ForCausalMM(HunyuanImage3PreTrainedModel, GenerationMixin):
             t = t.repeat(cfg_factor)
             latents = latents.repeat(cfg_factor, 1, 1, 1)
 
+        # Cast latents to the model's computation dtype (bfloat16) so they
+        # match patch_embed / transformer weights.  VAE itself is kept in
+        # float32 for precision, but downstream modules expect bfloat16.
+        model_dtype = next(self.model.parameters()).dtype
+        latents = latents.to(dtype=model_dtype)
+
         return t, latents
 
     def _encode_cond_image(
