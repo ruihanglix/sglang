@@ -325,6 +325,13 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         gen_config.use_system_prompt = use_system_prompt
         gen_config.bot_task = bot_task
 
+        # Force greedy decoding for text generation phases (CoT, recaption).
+        # With TP, different ranks have different CUDA random states, so
+        # sampling can produce different tokens on different ranks, causing
+        # the text generation to end at different steps and deadlocking the
+        # subsequent collective operations.
+        gen_config.do_sample = False
+
         # Generate image using official model
         cot_text, outputs = self.official_model.generate_image(
             prompt=prompt,
@@ -385,6 +392,9 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
+
+        # Force greedy decoding for TP compatibility (see _forward_image)
+        self.official_model.generation_config.do_sample = False
 
         input_length = model_inputs["input_ids"].shape[1]
         outputs = self.official_model.generate(
