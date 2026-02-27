@@ -353,7 +353,7 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         )
 
         if cot_text:
-            logger.info("CoT/recaption: %s", str(cot_text)[:200])
+            logger.info("CoT/recaption (full): %s", str(cot_text))
 
         raw_images = []
         if hasattr(outputs, "images"):
