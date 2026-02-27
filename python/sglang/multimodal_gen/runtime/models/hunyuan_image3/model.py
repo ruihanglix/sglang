@@ -205,7 +205,8 @@ class TPHunyuanMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         gate_up, _ = self.gate_up_proj(x)
         gate, up = gate_up.chunk(2, dim=-1)
-        x = F.silu(gate) * up
+        # Official HunyuanImage-3.0 does x1 * silu(x2), i.e. gate * silu(up)
+        x = gate * F.silu(up)
         x, _ = self.down_proj(x)
         return x
 
@@ -476,19 +477,24 @@ _EXPERT_RE = re.compile(
 def _unpack_qkv(qkv_weight: torch.Tensor, config) -> Tuple[torch.Tensor, ...]:
     """Split the packed QKV weight into separate Q, K, V tensors.
 
-    Official checkpoint stores QKV as simple concatenation [Q; K; V] along
-    the output dimension: shape (num_heads*head_dim + 2*num_kv_heads*head_dim, hidden_size).
+    Official checkpoint stores QKV in an interleaved layout grouped by KV heads.
+    The output dimension is (num_kv_heads * (num_kv_groups + 2) * head_dim).
+    For each KV head, the layout is: [Q_0, ..., Q_(groups-1), K, V] * head_dim.
+
+    This matches the official forward which reshapes to
+    (bsz, seq_len, num_kv_heads, num_kv_groups + 2, head_dim) and splits
+    along dim=3 with sizes [num_kv_groups, 1, 1].
     """
     num_heads = config.num_attention_heads
     num_kv_heads = getattr(config, "num_key_value_heads", num_heads)
     head_dim = config.attention_head_dim
+    num_kv_groups = num_heads // num_kv_heads
 
-    q_dim = num_heads * head_dim
-    kv_dim = num_kv_heads * head_dim
-
-    q = qkv_weight[:q_dim, :]
-    k = qkv_weight[q_dim : q_dim + kv_dim, :]
-    v = qkv_weight[q_dim + kv_dim :, :]
+    hidden_size = qkv_weight.shape[1]
+    w = qkv_weight.reshape(num_kv_heads, num_kv_groups + 2, head_dim, hidden_size)
+    q = w[:, :num_kv_groups, :, :].reshape(num_heads * head_dim, hidden_size)
+    k = w[:, num_kv_groups, :, :].reshape(num_kv_heads * head_dim, hidden_size)
+    v = w[:, num_kv_groups + 1, :, :].reshape(num_kv_heads * head_dim, hidden_size)
     return q, k, v
 
 
@@ -528,10 +534,13 @@ def load_tp_weights(
                     logger.warning("Missing param %s for expert %d", param_name, expert_id)
                     continue
                 half = loaded_weight.shape[0] // 2
-                gate_w = loaded_weight[:half]
-                up_w = loaded_weight[half:]
-                param.weight_loader(param, gate_w, param_name, shard_id="w1", expert_id=expert_id)
-                param.weight_loader(param, up_w, param_name, shard_id="w3", expert_id=expert_id)
+                first_half = loaded_weight[:half]
+                second_half = loaded_weight[half:]
+                # Official does x1 * silu(x2): first_half multiplied directly,
+                # second_half gets silu. FusedMoE does silu(w1) * w3, so
+                # second_half -> w1 (silu applied) and first_half -> w3 (direct).
+                param.weight_loader(param, second_half, param_name, shard_id="w1", expert_id=expert_id)
+                param.weight_loader(param, first_half, param_name, shard_id="w3", expert_id=expert_id)
             else:  # down_proj
                 param_name = f"{layer_prefix}.experts.w2_weight"
                 param = params_dict.get(param_name)
@@ -554,14 +563,14 @@ def load_tp_weights(
                 loaded_count += 1
             continue
 
-        # --- Shared MLP gate_and_up_proj -> gate_up_proj ---
-        if ".shared_mlp.gate_and_up_proj." in name:
+        # --- MLP gate_and_up_proj -> gate_up_proj (both shared and non-MoE) ---
+        if ".gate_and_up_proj." in name and ".experts." not in name:
             mapped = name.replace("gate_and_up_proj", "gate_up_proj")
             param = params_dict.get(mapped)
             if param is not None:
                 half = loaded_weight.shape[0] // 2
-                param.weight_loader(param, loaded_weight[:half], 0)   # gate -> shard 0
-                param.weight_loader(param, loaded_weight[half:], 1)   # up   -> shard 1
+                param.weight_loader(param, loaded_weight[:half], 0)   # first half -> shard 0
+                param.weight_loader(param, loaded_weight[half:], 1)   # second half -> shard 1
                 loaded_count += 1
             continue
 
