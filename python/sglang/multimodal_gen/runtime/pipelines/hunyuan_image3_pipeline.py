@@ -135,12 +135,6 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
                 logger.warning("Missing auxiliary weights: %s", real_missing[:10])
 
         official_model = official_model.to(device=device, dtype=torch.bfloat16)
-        # Restore VAE to float32: the official pipeline uses float32 VAE
-        # weights with float16 autocast for decoding. Keeping VAE in bf16
-        # degrades image reconstruction quality.
-        if hasattr(official_model, "vae") and official_model.vae is not None:
-            official_model.vae = official_model.vae.to(dtype=torch.float32)
-            logger.info("VAE restored to float32 for precision")
         official_model.eval()
 
         # Load generation config with model-specific fields
