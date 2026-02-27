@@ -476,20 +476,19 @@ _EXPERT_RE = re.compile(
 def _unpack_qkv(qkv_weight: torch.Tensor, config) -> Tuple[torch.Tensor, ...]:
     """Split the packed QKV weight into separate Q, K, V tensors.
 
-    Official checkpoint stores QKV interleaved as
-    (num_kv_heads, num_kv_groups + 2, head_dim, hidden_size).
+    Official checkpoint stores QKV as simple concatenation [Q; K; V] along
+    the output dimension: shape (num_heads*head_dim + 2*num_kv_heads*head_dim, hidden_size).
     """
     num_heads = config.num_attention_heads
     num_kv_heads = getattr(config, "num_key_value_heads", num_heads)
     head_dim = config.attention_head_dim
-    hidden_size = config.hidden_size
-    num_kv_groups = num_heads // num_kv_heads
 
-    qkv = qkv_weight.reshape(num_kv_heads, num_kv_groups + 2, head_dim, hidden_size)
-    q, k, v = torch.split(qkv, (num_kv_groups, 1, 1), dim=1)
-    q = q.reshape(-1, hidden_size)
-    k = k.reshape(-1, hidden_size)
-    v = v.reshape(-1, hidden_size)
+    q_dim = num_heads * head_dim
+    kv_dim = num_kv_heads * head_dim
+
+    q = qkv_weight[:q_dim, :]
+    k = qkv_weight[q_dim : q_dim + kv_dim, :]
+    v = qkv_weight[q_dim + kv_dim :, :]
     return q, k, v
 
 
