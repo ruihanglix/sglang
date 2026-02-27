@@ -121,8 +121,6 @@ def to_device(data, device):
         return data.to(device)
     elif isinstance(data, list):
         return [to_device(x, device) for x in data]
-    elif isinstance(data, dict):
-        return {k: to_device(v, device) for k, v in data.items()}
     else:
         return data
 

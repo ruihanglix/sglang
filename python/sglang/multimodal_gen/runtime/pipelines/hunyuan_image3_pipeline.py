@@ -286,9 +286,7 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         return batch
 
     def _forward_image(self, batch: Req, server_args: ServerArgs) -> Req:
-        """Image generation / editing forward."""
-        from PIL import Image as PILImage
-
+        """Image generation forward."""
         prompt = batch.sampling_params.prompt
         image_size = getattr(batch.sampling_params, "size", "1024x1024")
 
@@ -296,32 +294,30 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             h, w = image_size.split("x")
             image_size = (int(h), int(w))
 
+        num_steps = getattr(
+            batch.sampling_params, "num_inference_steps",
+            getattr(server_args.pipeline_config, "diff_infer_steps", 8),
+        )
+        guidance_scale = getattr(
+            batch.sampling_params, "guidance_scale",
+            getattr(server_args.pipeline_config, "diff_guidance_scale", 2.5),
+        )
         seed = None
         if batch.seeds:
             seed = batch.seeds[0]
 
-        # Load condition image for editing if provided
-        cond_image = None
-        image_path = getattr(batch.sampling_params, "image_path", None)
-        if image_path:
-            if isinstance(image_path, list):
-                image_path = image_path[0]
-            try:
-                cond_image = PILImage.open(image_path).convert("RGB")
-                logger.info("Loaded condition image: %s", image_path)
-            except Exception as e:
-                logger.warning("Failed to load condition image: %s", e)
-
+        # Determine system prompt
         use_system_prompt = "en_unified"
         bot_task = "think_recaption"
 
         logger.info(
-            "Generating image: prompt=%s, size=%s, edit=%s",
+            "Generating image: prompt=%s, size=%s, steps=%d",
             prompt[:50] + "..." if len(prompt) > 50 else prompt,
             image_size,
-            cond_image is not None,
+            num_steps,
         )
 
+        # Set generation config
         gen_config = self.official_model.generation_config
         gen_config.flow_shift = getattr(
             server_args.pipeline_config, "flow_shift", 3.0
@@ -329,22 +325,16 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         gen_config.use_system_prompt = use_system_prompt
         gen_config.bot_task = bot_task
 
-        # Synchronize CUDA random state across TP ranks before text generation.
-        # With TP, different ranks have different CUDA random states; if
-        # sampling produces different tokens, ranks desync and NCCL deadlocks.
-        # We fix this by seeding all ranks identically so sampling is deterministic
-        # across ranks, while still preserving do_sample=True for quality.
-        if torch.distributed.is_initialized():
-            sync_seed = torch.tensor(
-                [torch.cuda.initial_seed() % (2**31)],
-                device="cuda", dtype=torch.long,
-            )
-            torch.distributed.broadcast(sync_seed, src=0)
-            torch.cuda.manual_seed(sync_seed.item())
+        # Force greedy decoding for text generation phases (CoT, recaption).
+        # With TP, different ranks have different CUDA random states, so
+        # sampling can produce different tokens on different ranks, causing
+        # the text generation to end at different steps and deadlocking the
+        # subsequent collective operations.
+        gen_config.do_sample = False
 
+        # Generate image using official model
         cot_text, outputs = self.official_model.generate_image(
             prompt=prompt,
-            image=cond_image,
             image_size=image_size,
             seed=seed,
             use_system_prompt=use_system_prompt,
@@ -403,14 +393,8 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             **kwargs,
         )
 
-        # Synchronize CUDA random state across TP ranks (see _forward_image)
-        if torch.distributed.is_initialized():
-            sync_seed = torch.tensor(
-                [torch.cuda.initial_seed() % (2**31)],
-                device="cuda", dtype=torch.long,
-            )
-            torch.distributed.broadcast(sync_seed, src=0)
-            torch.cuda.manual_seed(sync_seed.item())
+        # Force greedy decoding for TP compatibility (see _forward_image)
+        self.official_model.generation_config.do_sample = False
 
         input_length = model_inputs["input_ids"].shape[1]
         outputs = self.official_model.generate(
