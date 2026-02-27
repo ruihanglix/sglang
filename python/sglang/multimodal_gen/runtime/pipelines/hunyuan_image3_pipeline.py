@@ -325,12 +325,18 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
         gen_config.use_system_prompt = use_system_prompt
         gen_config.bot_task = bot_task
 
-        # Force greedy decoding for text generation phases (CoT, recaption).
-        # With TP, different ranks have different CUDA random states, so
-        # sampling can produce different tokens on different ranks, causing
-        # the text generation to end at different steps and deadlocking the
-        # subsequent collective operations.
-        gen_config.do_sample = False
+        # Synchronize CUDA random state across TP ranks before text generation.
+        # With TP, different ranks have different CUDA random states; if
+        # sampling produces different tokens, ranks desync and NCCL deadlocks.
+        # We fix this by seeding all ranks identically so sampling is deterministic
+        # across ranks, while still preserving do_sample=True for quality.
+        if torch.distributed.is_initialized():
+            sync_seed = torch.tensor(
+                [torch.cuda.initial_seed() % (2**31)],
+                device="cuda", dtype=torch.long,
+            )
+            torch.distributed.broadcast(sync_seed, src=0)
+            torch.cuda.manual_seed(sync_seed.item())
 
         # Generate image using official model
         cot_text, outputs = self.official_model.generate_image(
@@ -393,8 +399,14 @@ class HunyuanImage3Pipeline(ComposedPipelineBase):
             **kwargs,
         )
 
-        # Force greedy decoding for TP compatibility (see _forward_image)
-        self.official_model.generation_config.do_sample = False
+        # Synchronize CUDA random state across TP ranks (see _forward_image)
+        if torch.distributed.is_initialized():
+            sync_seed = torch.tensor(
+                [torch.cuda.initial_seed() % (2**31)],
+                device="cuda", dtype=torch.long,
+            )
+            torch.distributed.broadcast(sync_seed, src=0)
+            torch.cuda.manual_seed(sync_seed.item())
 
         input_length = model_inputs["input_ids"].shape[1]
         outputs = self.official_model.generate(
