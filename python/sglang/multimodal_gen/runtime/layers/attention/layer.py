@@ -357,6 +357,7 @@ class USPAttention(nn.Module):
         forward_context: ForwardContext = get_forward_context()
         ctx_attn_metadata = forward_context.attn_metadata
         if get_sequence_parallel_world_size() == 1:
+            # No sequence parallelism, just run local attention.
             out = self.attn_impl.forward(q, k, v, ctx_attn_metadata)
             return out
 
@@ -368,6 +369,7 @@ class USPAttention(nn.Module):
 
         # Ulysses-style All-to-All for sequence/head sharding
         if sp_size > 1:
+            # -> [B, S, H_local, D]
             q = _usp_input_all_to_all(q, head_dim=2)
             k = _usp_input_all_to_all(k, head_dim=2)
             v = _usp_input_all_to_all(v, head_dim=2)
@@ -383,10 +385,12 @@ class USPAttention(nn.Module):
                 dropout_p=self.dropout_p,
             )
         else:
+            # -> [B, S, H_local, D]
             out = self.attn_impl.forward(q, k, v, ctx_attn_metadata)
 
         # Ulysses-style All-to-All to restore original sharding
         if sp_size > 1:
+            # -> [B, S_local, H, D]
             out = _usp_output_all_to_all(out, head_dim=2)
 
         return out

@@ -535,6 +535,7 @@ class Flux2PipelineConfig(FluxPipelineConfig):
         if txt_ids.ndim == 3:
             txt_ids = txt_ids[0]
 
+        # NOTE(mick): prepare it here, to avoid unnecessary computations
         img_cos, img_sin = rotary_emb.forward(img_ids)
         img_cos = shard_rotary_emb_for_sp(img_cos)
         img_sin = shard_rotary_emb_for_sp(img_sin)
